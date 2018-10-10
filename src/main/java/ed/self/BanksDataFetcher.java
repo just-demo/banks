@@ -13,9 +13,7 @@ import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -25,6 +23,7 @@ import static java.nio.charset.StandardCharsets.UTF_8;
 import static java.util.Arrays.stream;
 import static java.util.stream.Collectors.joining;
 import static java.util.stream.Collectors.toList;
+import static java.util.stream.Collectors.toMap;
 import static org.apache.commons.io.FileUtils.readFileToString;
 import static org.apache.commons.io.FileUtils.writeStringToFile;
 
@@ -55,54 +54,61 @@ public class BanksDataFetcher {
             "<option value=\"2013-01-01\">4 квартала 2012</option>";
 
     public static void main(String[] args) throws Exception {
-        fetchAndSaveAll();
-
+        extractAndSaveBankNames();
     }
 
-    private static void fetchAndSaveAll() throws Exception {
+    private static void fetchAndSaveAllHtml() throws Exception {
         fetchAndSaveRatings();
         extractAndSaveRatings();
         fetchAndSaveBanks();
     }
 
-    private static Map<Long, String> fetchBankNames() {
-        String html = readFile(banksFile());
+    private static void extractAndSaveBankNames() throws IOException {
+        String html = readFile(htmlBanksFile());
 
+        Map<Long, String> bankNames = new HashMap<>();
+        Pattern pattern = Pattern.compile("class=\"bank-emblem--desktop\"[\\S\\s]+?/company/(.+?)/[\\S\\s]+?alt=\"(.+?)\"");
+        Matcher matcher = pattern.matcher(html);
+        while (matcher.find()) {
+            String bankId = matcher.group(1);
+            String bankName = matcher.group(2);
+            bankNames.put(Long.valueOf(bankId), bankName);
+        }
 
-        // TODO: fetch from here https://minfin.com.ua/banks/all/
+        bankNames = new TreeMap<>(bankNames);
+        writeStringToFile(jsonBanksFile(), toJson(bankNames), UTF_8);
+    }
 
-//        return getDates().stream()
-//                .map(BanksDataFetcher::fetchBankNames)
-//                .map(Map::entrySet)
-//                .flatMap(Collection::stream)
-//                .collect(Collectors.toMap(
-//                        Map.Entry::getKey,
-//                        Map.Entry::getValue,
-//                        (a, b) -> {
-//                            if (!Objects.equals(a, b)) {
-//                                throw new RuntimeException("Different bank names: " + a + " != " + b);
-//                            }
-//                            return a;
-//                        }
-//                ));
-        return null;
+    private static Map<Long, String> fetchBankNamesFromDates() {
+        return getDates().stream()
+                .map(BanksDataFetcher::fetchBankNames)
+                .map(Map::entrySet)
+                .flatMap(Collection::stream)
+                .collect(toMap(
+                        Map.Entry::getKey,
+                        Map.Entry::getValue,
+                        (a, b) -> {
+                            if (!Objects.equals(a, b)) {
+                                throw new RuntimeException("Different bank names: " + a + " != " + b);
+                            }
+                            return a;
+                        }
+                ));
     }
 
     private static void fetchAndSaveBanks() {
         String html = readURL("https://minfin.com.ua/banks/all/");
-        writeFile(banksFile(), html);
+        writeFile(htmlBanksFile(), html);
     }
-
 
     private static Map<Long, String> fetchBankNames(String date) {
         Map<Long, String> bankNames = new HashMap<>();
-        String html = readFile(htmlFile(date));
-        Pattern pattern = Pattern.compile("data-id=\"(.+?)\"[\\S\\s]+?<a href=\"/company/(.+?)/rating/\"><span>(.+?)</span></a>");
+        String html = readFile(htmlRatingsFile(date));
+        Pattern pattern = Pattern.compile("data-id=\"(.+?)\"[\\S\\s]+?<a href=\"/company/.+?/rating/\">\\s*?<span.*?>(.+?)</span>");
         Matcher matcher = pattern.matcher(html);
         while (matcher.find()) {
             String bankId = matcher.group(1);
-            String bankAlias = matcher.group(2);
-            String bankName = matcher.group(3);
+            String bankName = matcher.group(2);
             bankNames.put(Long.valueOf(bankId), bankName);
         }
         return bankNames;
@@ -116,7 +122,7 @@ public class BanksDataFetcher {
                 "}";
         json = json.replaceAll("'", "\"");
         json = formatJson(json);
-        File outFile = jsonFile();
+        File outFile = jsonRatingsFile();
         createParentDirs(outFile);
         writeStringToFile(outFile, json, UTF_8);
     }
@@ -125,12 +131,17 @@ public class BanksDataFetcher {
         ObjectMapper mapper = new ObjectMapper();
         mapper.configure(JsonParser.Feature.ALLOW_SINGLE_QUOTES, true);
         mapper.configure(JsonParser.Feature.ALLOW_UNQUOTED_FIELD_NAMES, true);
+        return toJson(mapper.readValue(json, Object.class));
+    }
+
+    private static String toJson(Object object) throws IOException {
+        ObjectMapper mapper = new ObjectMapper();
         mapper.enable(INDENT_OUTPUT);
-        return mapper.writeValueAsString(mapper.readValue(json, Object.class));
+        return mapper.writeValueAsString(object);
     }
 
     private static String fetchRatingsJson(String date) {
-        String html = readFile(htmlFile(date));
+        String html = readFile(htmlRatingsFile(date));
         Pattern pattern = Pattern.compile("<script>\\s*data\\s*=([^;]+);\\s*</script>");
         Matcher matcher = pattern.matcher(html);
         if (matcher.find()) {
@@ -151,7 +162,7 @@ public class BanksDataFetcher {
     private static void fetchAndSaveRating(String date) {
         //https://minfin.com.ua/img/company/58/logo/1532080477.jpg
         String content = readURL("https://minfin.com.ua/banks/rating/?date=" + date);
-        File outFile = htmlFile(date);
+        File outFile = htmlRatingsFile(date);
         writeFile(outFile, content);
     }
 
@@ -166,16 +177,20 @@ public class BanksDataFetcher {
     }
 
 
-    private static File htmlFile(String date) {
+    private static File htmlRatingsFile(String date) {
         return dataFolder().resolve("html").resolve(date + ".html").toFile();
     }
 
-    private static File banksFile() {
+    private static File htmlBanksFile() {
         return dataFolder().resolve("html").resolve("banks.html").toFile();
     }
 
-    private static File jsonFile() {
+    private static File jsonRatingsFile() {
         return dataFolder().resolve("json").resolve("bank-rates.json").toFile();
+    }
+
+    private static File jsonBanksFile() {
+        return dataFolder().resolve("json").resolve("banks.json").toFile();
     }
 
     private static Path dataFolder() {
