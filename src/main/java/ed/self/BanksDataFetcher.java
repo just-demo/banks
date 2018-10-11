@@ -11,9 +11,11 @@ import org.apache.http.impl.client.HttpClients;
 import java.io.File;
 import java.io.IOException;
 import java.io.UncheckedIOException;
+import java.math.BigDecimal;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.*;
+import java.util.function.Function;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -54,12 +56,18 @@ public class BanksDataFetcher {
             "<option value=\"2013-01-01\">4 квартала 2012</option>";
 
     public static void main(String[] args) throws Exception {
+        extractAndSaveAllJson();
+    }
+
+    private static void extractAndSaveAllJson() throws Exception {
         extractAndSaveBankNames();
+        extractAndSaveBankRatings();
+        extractAndSaveBankDetails();
     }
 
     private static void fetchAndSaveAllHtml() throws Exception {
         fetchAndSaveRatings();
-        extractAndSaveRatings();
+        extractAndSaveBankDetails();
         fetchAndSaveBanks();
     }
 
@@ -96,9 +104,44 @@ public class BanksDataFetcher {
                 ));
     }
 
+/*
+...
+<td class="sustain-rating--table-td number-column" data-id="58">
+<div style="height: 0; width: 0;" id="place1"></div>
+...
+</td>
+<td class="sustain-rating--table-td" data-title="Общий рейтинг"><span class="fixedNumber">4.56</span>
+&nbsp;<div class="sustain-rating--table-stars" data-sort="1">
+...
+</td>
+<td class="sustain-rating--table-td" data-title="Стрессо-устойчивость">4.6</td>
+<td class="sustain-rating--table-td" data-title="Лояльность вкладчиков">4.4</td>
+<td class="sustain-rating--table-td" data-title="Оценкааналитиков">4.82</td>
+<td class="sustain-rating--table-td more" data-title="Место в рэнкинге по депозитам физлиц ">
+<span>5
+<div title="Нажмите, чтобы увидеть дополнительную информацию"></div>
+</span>
+...
+Overall rating
+Stress resistance
+Depositors loyalty
+ */
     private static void fetchAndSaveBanks() {
         String html = readURL("https://minfin.com.ua/banks/all/");
         writeFile(htmlBanksFile(), html);
+    }
+
+    private static Map<Long, BigDecimal> extractBankRatings(String date) {
+        Map<Long, BigDecimal> ratings = new HashMap<>();
+        String html = readFile(htmlRatingsFile(date));
+        Pattern pattern = Pattern.compile("data-id=\"(.+?)\"[\\S\\s]+?data-title=\"Общий рейтинг\"><span.*?>(.+?)</span>");
+        Matcher matcher = pattern.matcher(html);
+        while (matcher.find()) {
+            String bankId = matcher.group(1);
+            String rating = matcher.group(2);
+            ratings.put(Long.valueOf(bankId), new BigDecimal(rating));
+        }
+        return ratings;
     }
 
     private static Map<Long, String> fetchBankNames(String date) {
@@ -114,7 +157,15 @@ public class BanksDataFetcher {
         return bankNames;
     }
 
-    private static void extractAndSaveRatings() throws Exception {
+    private static void extractAndSaveBankRatings() throws IOException {
+        Map<String, Map<Long, BigDecimal>> ratings = getDates().stream().collect(toMap(
+                Function.identity(),
+                BanksDataFetcher::extractBankRatings
+        ));
+        writeStringToFile(jsonRatingsFile(), toJson(ratings), UTF_8);
+    }
+
+    private static void extractAndSaveBankDetails() throws Exception {
         String json = "{" +
                 getDates().stream()
                         .map(date -> "\"" + date + "\": " + fetchRatingsJson(date).replaceAll("(\\d+):", "\"$1\":"))
@@ -122,7 +173,7 @@ public class BanksDataFetcher {
                 "}";
         json = json.replaceAll("'", "\"");
         json = formatJson(json);
-        File outFile = jsonRatingsFile();
+        File outFile = jsonDetailsFile();
         createParentDirs(outFile);
         writeStringToFile(outFile, json, UTF_8);
     }
@@ -185,8 +236,12 @@ public class BanksDataFetcher {
         return dataFolder().resolve("html").resolve("banks.html").toFile();
     }
 
+    private static File jsonDetailsFile() {
+        return dataFolder().resolve("json").resolve("bank-details.json").toFile();
+    }
+
     private static File jsonRatingsFile() {
-        return dataFolder().resolve("json").resolve("bank-rates.json").toFile();
+        return dataFolder().resolve("json").resolve("bank-ratings.json").toFile();
     }
 
     private static File jsonBanksFile() {
